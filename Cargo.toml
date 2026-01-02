@@ -2,11 +2,11 @@
 name = "rust-boot"
 version = "0.1.0"
 edition = "2024"
-description = "Minimal UEFI bootloader with BTRFS support"
+description = "Minimal UEFI bootloader"
 
 [dependencies]
-uefi = { version = "0.32", features = ["alloc"] }
-log = "0.4"
+uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
+log = { version = "0.4", default-features = false }
 
 [profile.release]
 opt-level = "z"
