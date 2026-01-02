@@ -5,8 +5,13 @@ edition = "2024"
 description = "Minimal UEFI bootloader"
 
 [dependencies]
-uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 log = { version = "0.4", default-features = false }
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
+
+[dev-dependencies]
+# For tests on host (non-UEFI)
 
 [profile.release]
 opt-level = "z"

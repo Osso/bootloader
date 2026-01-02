@@ -1,18 +1,27 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(target_os = "uefi", no_main)]
+#![cfg_attr(target_os = "uefi", no_std)]
 
+#[cfg(target_os = "uefi")]
 extern crate alloc;
 
 mod config;
+#[cfg(target_os = "uefi")]
 mod loader;
+#[cfg(target_os = "uefi")]
 mod menu;
 
+#[cfg(target_os = "uefi")]
 use config::BootConfig;
+#[cfg(target_os = "uefi")]
 use core::time::Duration;
+#[cfg(target_os = "uefi")]
 use uefi::fs::{FileSystem, Path};
+#[cfg(target_os = "uefi")]
 use uefi::prelude::*;
+#[cfg(target_os = "uefi")]
 use uefi::{boot, CString16};
 
+#[cfg(target_os = "uefi")]
 #[entry]
 fn main() -> Status {
     uefi::helpers::init().unwrap();
@@ -70,12 +79,14 @@ fn main() -> Status {
     Status::SUCCESS
 }
 
+#[cfg(target_os = "uefi")]
 fn open_esp_filesystem() -> uefi::Result<FileSystem> {
     let handle = boot::image_handle();
     let fs_proto = boot::get_image_file_system(handle)?;
     Ok(FileSystem::new(fs_proto))
 }
 
+#[cfg(target_os = "uefi")]
 fn load_config(mut fs: FileSystem) -> Result<BootConfig, &'static str> {
     let path = CString16::try_from("\\boot.conf").map_err(|_| "Invalid path")?;
     let content = fs

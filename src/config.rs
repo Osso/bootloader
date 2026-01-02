@@ -13,8 +13,15 @@
 //! options = root=UUID=... rw quiet
 //! ```
 
+#[cfg(target_os = "uefi")]
 use alloc::string::String;
+#[cfg(target_os = "uefi")]
 use alloc::vec::Vec;
+
+#[cfg(not(target_os = "uefi"))]
+use std::string::String;
+#[cfg(not(target_os = "uefi"))]
+use std::vec::Vec;
 
 #[derive(Debug)]
 pub struct BootConfig {
@@ -168,5 +175,133 @@ options = root=UUID=abc123 rw quiet
         assert_eq!(entry.kernel, "/arch/vmlinuz-linux");
         assert_eq!(entry.initrd.len(), 2);
         assert_eq!(entry.options, "root=UUID=abc123 rw quiet");
+    }
+
+    #[test]
+    fn test_multiple_entries() {
+        let content = r#"
+timeout = 5
+default = ubuntu
+
+[arch]
+title = Arch Linux
+kernel = /arch/vmlinuz
+initrd = /arch/initramfs.img
+options = root=/dev/sda1
+
+[ubuntu]
+title = Ubuntu
+kernel = /ubuntu/vmlinuz
+initrd = /ubuntu/initrd.img
+options = root=/dev/sda2
+"#;
+
+        let config = parse(content).unwrap();
+        assert_eq!(config.entries.len(), 2);
+        assert_eq!(config.entries[0].id, "arch");
+        assert_eq!(config.entries[1].id, "ubuntu");
+    }
+
+    #[test]
+    fn test_default_entry_index() {
+        let content = r#"
+timeout = 5
+default = ubuntu
+
+[arch]
+title = Arch
+kernel = /vmlinuz
+options = root=/dev/sda1
+
+[ubuntu]
+title = Ubuntu
+kernel = /vmlinuz
+options = root=/dev/sda2
+"#;
+
+        let config = parse(content).unwrap();
+        assert_eq!(default_entry_index(&config), 1);
+    }
+
+    #[test]
+    fn test_default_entry_not_found() {
+        let content = r#"
+timeout = 5
+default = nonexistent
+
+[arch]
+title = Arch
+kernel = /vmlinuz
+options = root=/dev/sda1
+"#;
+
+        let config = parse(content).unwrap();
+        assert_eq!(default_entry_index(&config), 0); // Falls back to first
+    }
+
+    #[test]
+    fn test_no_initrd() {
+        let content = r#"
+[minimal]
+title = Minimal
+kernel = /vmlinuz
+options = root=/dev/sda1
+"#;
+
+        let config = parse(content).unwrap();
+        assert_eq!(config.entries[0].initrd.len(), 0);
+    }
+
+    #[test]
+    fn test_defaults() {
+        let content = r#"
+[test]
+title = Test
+kernel = /vmlinuz
+"#;
+
+        let config = parse(content).unwrap();
+        assert_eq!(config.timeout, 5); // default
+        assert_eq!(config.default, "test"); // defaults to first entry
+        assert_eq!(config.entries[0].options, ""); // default
+    }
+
+    #[test]
+    fn test_whitespace_handling() {
+        let content = "  timeout  =  10  \n[test]\n  title  =  Spaced Title  \nkernel=/vmlinuz\n";
+
+        let config = parse(content).unwrap();
+        assert_eq!(config.timeout, 10);
+        assert_eq!(config.entries[0].title, "Spaced Title");
+    }
+
+    #[test]
+    fn test_empty_lines_ignored() {
+        let content = r#"
+
+timeout = 3
+
+[test]
+
+title = Test
+
+kernel = /vmlinuz
+
+"#;
+
+        let config = parse(content).unwrap();
+        assert_eq!(config.timeout, 3);
+        assert_eq!(config.entries.len(), 1);
+    }
+
+    #[test]
+    fn test_missing_kernel_fails() {
+        let content = r#"
+[test]
+title = Test
+options = root=/dev/sda1
+"#;
+
+        assert!(parse(content).is_err());
     }
 }
