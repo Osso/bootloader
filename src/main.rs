@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod config;
+mod loader;
 mod menu;
 
 use config::BootConfig;
@@ -42,19 +43,30 @@ fn main() -> Status {
     let entry = &config.entries[selected];
 
     log::info!("Booting: {}", entry.title);
-
-    // TODO: Load kernel and initrd, then boot
-    // For now, just print what we would boot
     log::info!("  kernel: {}", entry.kernel);
     for initrd in &entry.initrd {
         log::info!("  initrd: {}", initrd);
     }
     log::info!("  options: {}", entry.options);
 
-    // Placeholder - will implement actual boot later
-    log::info!("Boot not yet implemented, halting...");
-    boot::stall(Duration::from_secs(5));
+    // Re-open filesystem for loading kernel
+    let mut fs = match open_esp_filesystem() {
+        Ok(fs) => fs,
+        Err(e) => {
+            log::error!("Failed to reopen ESP filesystem: {:?}", e);
+            return Status::LOAD_ERROR;
+        }
+    };
 
+    // Load and boot the kernel
+    if let Err(e) = loader::boot_linux(&mut fs, entry) {
+        log::error!("Boot failed: {}", e);
+        log::info!("Press any key to continue...");
+        boot::stall(Duration::from_secs(10));
+        return Status::LOAD_ERROR;
+    }
+
+    // Should not reach here
     Status::SUCCESS
 }
 
