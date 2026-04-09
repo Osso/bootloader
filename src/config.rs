@@ -2,7 +2,6 @@
 //!
 //! Format:
 //! ```ini
-//! timeout = 5
 //! default = arch
 //!
 //! [arch]
@@ -25,7 +24,6 @@ use std::vec::Vec;
 
 #[derive(Debug)]
 pub struct BootConfig {
-    pub timeout: u32,
     pub default: String,
     pub entries: Vec<BootEntry>,
 }
@@ -42,7 +40,6 @@ pub struct BootEntry {
 impl Default for BootConfig {
     fn default() -> Self {
         Self {
-            timeout: 5,
             default: String::new(),
             entries: Vec::new(),
         }
@@ -105,15 +102,10 @@ pub fn parse(content: &str) -> Result<BootConfig, &'static str> {
                 }
             } else {
                 // Global settings
-                match key {
-                    "timeout" => {
-                        config.timeout = value.parse().unwrap_or(5);
-                    }
-                    "default" => {
-                        config.default = String::from(value);
-                    }
-                    _ => {} // Ignore unknown keys
+                if key == "default" {
+                    config.default = String::from(value);
                 }
+                // Ignore unknown keys (including legacy "timeout")
             }
         }
     }
@@ -153,7 +145,6 @@ mod tests {
     #[test]
     fn test_parse_basic() {
         let content = r#"
-timeout = 3
 default = arch
 
 [arch]
@@ -165,7 +156,6 @@ options = root=UUID=abc123 rw quiet
 "#;
 
         let config = parse(content).unwrap();
-        assert_eq!(config.timeout, 3);
         assert_eq!(config.default, "arch");
         assert_eq!(config.entries.len(), 1);
 
@@ -180,7 +170,6 @@ options = root=UUID=abc123 rw quiet
     #[test]
     fn test_multiple_entries() {
         let content = r#"
-timeout = 5
 default = ubuntu
 
 [arch]
@@ -205,7 +194,6 @@ options = root=/dev/sda2
     #[test]
     fn test_default_entry_index() {
         let content = r#"
-timeout = 5
 default = ubuntu
 
 [arch]
@@ -226,7 +214,6 @@ options = root=/dev/sda2
     #[test]
     fn test_default_entry_not_found() {
         let content = r#"
-timeout = 5
 default = nonexistent
 
 [arch]
@@ -261,17 +248,16 @@ kernel = /vmlinuz
 "#;
 
         let config = parse(content).unwrap();
-        assert_eq!(config.timeout, 5); // default
         assert_eq!(config.default, "test"); // defaults to first entry
         assert_eq!(config.entries[0].options, ""); // default
     }
 
     #[test]
     fn test_whitespace_handling() {
-        let content = "  timeout  =  10  \n[test]\n  title  =  Spaced Title  \nkernel=/vmlinuz\n";
+        let content = "  default  =  test  \n[test]\n  title  =  Spaced Title  \nkernel=/vmlinuz\n";
 
         let config = parse(content).unwrap();
-        assert_eq!(config.timeout, 10);
+        assert_eq!(config.default, "test");
         assert_eq!(config.entries[0].title, "Spaced Title");
     }
 
@@ -279,7 +265,7 @@ kernel = /vmlinuz
     fn test_empty_lines_ignored() {
         let content = r#"
 
-timeout = 3
+default = test
 
 [test]
 
@@ -290,7 +276,7 @@ kernel = /vmlinuz
 "#;
 
         let config = parse(content).unwrap();
-        assert_eq!(config.timeout, 3);
+        assert_eq!(config.default, "test");
         assert_eq!(config.entries.len(), 1);
     }
 
