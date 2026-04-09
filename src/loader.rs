@@ -39,6 +39,12 @@ const SETUP_HEADER_SIGNATURE: u32 = 0x5372_6448;
 const EFI_HANDOVER_64_FLAG: u16 = 0x08;
 const PE_SIGNATURE: u32 = 0x0000_4550;
 
+// EFI Device Path types (UEFI spec §10.3)
+const MEDIA_DEVICE_PATH: u8 = 0x04;
+const MEDIA_VENDOR_DP: u8 = 0x03;
+const END_DEVICE_PATH_TYPE: u8 = 0x7F;
+const END_ENTIRE_DEVICE_PATH_SUBTYPE: u8 = 0xFF;
+
 /// Global initrd data - must remain valid until kernel takes over
 /// Using static mut because UEFI callbacks need access to this
 static mut INITRD_DATA: Option<InitrdInfo> = None;
@@ -94,17 +100,17 @@ static LOAD_FILE2_PROTOCOL: LoadFile2Protocol = LoadFile2Protocol {
 static INITRD_DEVICE_PATH: InitrdDevicePath = InitrdDevicePath {
     vendor: VendorDevicePath {
         header: DevicePathHeader {
-            device_type: 0x04, // MEDIA_DEVICE_PATH
-            sub_type: 0x03,    // MEDIA_VENDOR_DP
-            length: [20, 0],   // sizeof(VendorDevicePath) = 20
+            device_type: MEDIA_DEVICE_PATH,
+            sub_type: MEDIA_VENDOR_DP,
+            length: [20, 0], // sizeof(VendorDevicePath) = 20
         },
         guid: LINUX_EFI_INITRD_MEDIA_GUID,
     },
     end: EndDevicePath {
         header: DevicePathHeader {
-            device_type: 0x7F, // END_DEVICE_PATH_TYPE
-            sub_type: 0xFF,    // END_ENTIRE_DEVICE_PATH_SUBTYPE
-            length: [4, 0],    // sizeof(EndDevicePath) = 4
+            device_type: END_DEVICE_PATH_TYPE,
+            sub_type: END_ENTIRE_DEVICE_PATH_SUBTYPE,
+            length: [4, 0], // sizeof(EndDevicePath) = 4
         },
     },
 };
