@@ -64,69 +64,77 @@ pub fn parse(content: &str) -> Result<BootConfig, &'static str> {
 
     for line in content.lines() {
         let line = line.trim();
-
-        // Skip empty lines and comments
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
 
-        // Section header [name]
-        if line.starts_with('[') && line.ends_with(']') {
-            // Save previous entry if any
-            if let Some(entry) = current_entry.take() {
-                if !entry.kernel.is_empty() {
-                    config.entries.push(entry);
-                }
-            }
-
-            let id = &line[1..line.len() - 1];
-            let mut entry = BootEntry::default();
-            entry.id = String::from(id);
-            current_entry = Some(entry);
+        if let Some(section_id) = section_id(line) {
+            push_entry(&mut config, current_entry.take());
+            current_entry = Some(new_entry(section_id));
             continue;
         }
 
-        // Key = value pairs
         if let Some((key, value)) = line.split_once('=') {
-            let key = key.trim();
-            let value = value.trim();
-
-            if let Some(ref mut entry) = current_entry {
-                // Inside a section
-                match key {
-                    "title" => entry.title = String::from(value),
-                    "kernel" => entry.kernel = String::from(value),
-                    "initrd" => entry.initrd.push(String::from(value)),
-                    "options" => entry.options = String::from(value),
-                    _ => {} // Ignore unknown keys
-                }
-            } else {
-                // Global settings
-                if key == "default" {
-                    config.default = String::from(value);
-                }
-                // Ignore unknown keys (including legacy "timeout")
-            }
+            apply_key_value(&mut config, &mut current_entry, key.trim(), value.trim());
         }
     }
 
-    // Save last entry
-    if let Some(entry) = current_entry {
-        if !entry.kernel.is_empty() {
-            config.entries.push(entry);
-        }
-    }
-
+    push_entry(&mut config, current_entry);
     if config.entries.is_empty() {
         return Err("No boot entries found");
     }
-
-    // Set default if not specified
     if config.default.is_empty() {
         config.default = config.entries[0].id.clone();
     }
-
     Ok(config)
+}
+
+fn section_id(line: &str) -> Option<&str> {
+    line.strip_prefix('[')?.strip_suffix(']')
+}
+
+fn new_entry(id: &str) -> BootEntry {
+    BootEntry {
+        id: String::from(id),
+        ..BootEntry::default()
+    }
+}
+
+fn push_entry(config: &mut BootConfig, entry: Option<BootEntry>) {
+    let Some(entry) = entry else {
+        return;
+    };
+    if !entry.kernel.is_empty() {
+        config.entries.push(entry);
+    }
+}
+
+fn apply_key_value(
+    config: &mut BootConfig,
+    current_entry: &mut Option<BootEntry>,
+    key: &str,
+    value: &str,
+) {
+    match current_entry {
+        Some(entry) => apply_entry_key(entry, key, value),
+        None => apply_global_key(config, key, value),
+    }
+}
+
+fn apply_entry_key(entry: &mut BootEntry, key: &str, value: &str) {
+    match key {
+        "title" => entry.title = String::from(value),
+        "kernel" => entry.kernel = String::from(value),
+        "initrd" => entry.initrd.push(String::from(value)),
+        "options" => entry.options = String::from(value),
+        _ => {}
+    }
+}
+
+fn apply_global_key(config: &mut BootConfig, key: &str, value: &str) {
+    if key == "default" {
+        config.default = String::from(value);
+    }
 }
 
 /// Find the index of the default entry

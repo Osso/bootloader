@@ -1,6 +1,6 @@
 //! Boot menu display and selection
 
-use crate::config::{default_entry_index, BootConfig};
+use crate::config::{BootConfig, default_entry_index};
 use uefi::proto::console::text::Key;
 
 /// Display the boot menu and return the index of the selected entry
@@ -9,23 +9,28 @@ pub fn show(config: &BootConfig) -> usize {
     display_menu(config, default);
 
     loop {
-        if let Some(key) = read_key() {
-            if let Key::Printable(c) = key {
-                let ch = char::from(c);
-                // Check for number keys 1-9
-                if let Some(digit) = ch.to_digit(10) {
-                    let index = (digit as usize).saturating_sub(1);
-                    if index < config.entries.len() {
-                        return index;
-                    }
-                }
-                // Enter selects default
-                if ch == '\r' {
-                    return default;
-                }
-            }
-        }
+        let Some(selected) = selected_entry(read_key(), config.entries.len(), default) else {
+            continue;
+        };
+        return selected;
     }
+}
+
+fn selected_entry(key: Option<Key>, entry_count: usize, default: usize) -> Option<usize> {
+    let Key::Printable(printable) = key? else {
+        return None;
+    };
+    let ch = char::from(printable);
+    if ch == '\r' {
+        return Some(default);
+    }
+
+    let digit = ch.to_digit(10)?;
+    let index = (digit as usize).saturating_sub(1);
+    if index < entry_count {
+        return Some(index);
+    }
+    None
 }
 
 fn display_menu(config: &BootConfig, default: usize) {
@@ -39,7 +44,10 @@ fn display_menu(config: &BootConfig, default: usize) {
     }
 
     log::info!("");
-    log::info!("Press 1-{} to boot, Enter for default", config.entries.len());
+    log::info!(
+        "Press 1-{} to boot, Enter for default",
+        config.entries.len()
+    );
 }
 
 fn clear_screen() {
@@ -51,8 +59,7 @@ fn clear_screen() {
 fn read_key() -> Option<Key> {
     use uefi::boot;
 
-    let stdin_handle =
-        boot::get_handle_for_protocol::<uefi::proto::console::text::Input>().ok()?;
+    let stdin_handle = boot::get_handle_for_protocol::<uefi::proto::console::text::Input>().ok()?;
 
     let mut stdin =
         boot::open_protocol_exclusive::<uefi::proto::console::text::Input>(stdin_handle).ok()?;

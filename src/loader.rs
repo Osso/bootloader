@@ -10,7 +10,7 @@ use core::ptr;
 use uefi::boot::{AllocateType, MemoryType};
 use uefi::fs::{FileSystem, Path};
 use uefi::proto::loaded_image::LoadedImage;
-use uefi::{boot, guid, CString16, Guid, Handle, Status};
+use uefi::{CString16, Guid, Handle, Status, boot, guid};
 
 use crate::config::BootEntry;
 
@@ -22,6 +22,22 @@ const EFI_LOAD_FILE2_PROTOCOL_GUID: Guid = guid!("4006c0c1-fcb3-403e-996d-4a6c87
 
 /// Device Path protocol GUID
 const EFI_DEVICE_PATH_PROTOCOL_GUID: Guid = guid!("09576e91-6d3f-11d2-8e39-00a0c969723b");
+
+const PAGE_SIZE: usize = 0x1000;
+const PAGE_ALIGN_MASK: usize = PAGE_SIZE - 1;
+const MIN_KERNEL_STUB_SIZE: usize = 0x260;
+const BOOT_SIGNATURE_OFFSET: usize = 0x1FE;
+const SETUP_HEADER_SIGNATURE_OFFSET: usize = 0x202;
+const BOOT_PROTOCOL_VERSION_OFFSET: usize = 0x206;
+const MIN_BOOT_PROTOCOL_VERSION: u16 = 0x0200;
+const EFI_HANDOVER_VERSION: u16 = 0x020C;
+const XLOADFLAGS_OFFSET: usize = 0x236;
+const PE_HEADER_POINTER_OFFSET: usize = 0x3C;
+
+const BOOT_SIGNATURE: [u8; 2] = [0x55, 0xAA];
+const SETUP_HEADER_SIGNATURE: u32 = 0x5372_6448;
+const EFI_HANDOVER_64_FLAG: u16 = 0x08;
+const PE_SIGNATURE: u32 = 0x0000_4550;
 
 /// Global initrd data - must remain valid until kernel takes over
 /// Using static mut because UEFI callbacks need access to this
@@ -78,17 +94,17 @@ static LOAD_FILE2_PROTOCOL: LoadFile2Protocol = LoadFile2Protocol {
 static INITRD_DEVICE_PATH: InitrdDevicePath = InitrdDevicePath {
     vendor: VendorDevicePath {
         header: DevicePathHeader {
-            device_type: 0x04,  // MEDIA_DEVICE_PATH
-            sub_type: 0x03,     // MEDIA_VENDOR_DP
-            length: [20, 0],    // sizeof(VendorDevicePath) = 20
+            device_type: 0x04, // MEDIA_DEVICE_PATH
+            sub_type: 0x03,    // MEDIA_VENDOR_DP
+            length: [20, 0],   // sizeof(VendorDevicePath) = 20
         },
         guid: LINUX_EFI_INITRD_MEDIA_GUID,
     },
     end: EndDevicePath {
         header: DevicePathHeader {
-            device_type: 0x7F,  // END_DEVICE_PATH_TYPE
-            sub_type: 0xFF,     // END_ENTIRE_DEVICE_PATH_SUBTYPE
-            length: [4, 0],     // sizeof(EndDevicePath) = 4
+            device_type: 0x7F, // END_DEVICE_PATH_TYPE
+            sub_type: 0xFF,    // END_ENTIRE_DEVICE_PATH_SUBTYPE
+            length: [4, 0],    // sizeof(EndDevicePath) = 4
         },
     },
 };
@@ -138,7 +154,8 @@ pub fn boot_linux(fs: &mut FileSystem, entry: &BootEntry) -> Result<(), &'static
     log::info!("Loading kernel: {}", entry.kernel);
 
     // Load kernel file
-    let kernel_path = CString16::try_from(entry.kernel.as_str()).map_err(|_| "Invalid kernel path")?;
+    let kernel_path =
+        CString16::try_from(entry.kernel.as_str()).map_err(|_| "Invalid kernel path")?;
     let kernel_data = fs
         .read(Path::new(&kernel_path))
         .map_err(|_| "Failed to read kernel")?;
@@ -180,50 +197,44 @@ pub fn boot_linux(fs: &mut FileSystem, entry: &BootEntry) -> Result<(), &'static
 
 /// Verify the kernel has a valid EFI stub
 fn verify_linux_efi_stub(data: &[u8]) -> bool {
-    if data.len() < 0x260 {
+    if data.len() < MIN_KERNEL_STUB_SIZE {
         log::error!("Kernel too small");
         return false;
     }
 
-    // Check boot signature
-    if data[0x1FE] != 0x55 || data[0x1FF] != 0xAA {
+    if read_bytes::<2>(data, BOOT_SIGNATURE_OFFSET) != Some(BOOT_SIGNATURE) {
         log::error!("Invalid boot signature");
         return false;
     }
 
-    // Check header signature "HdrS"
-    let hdrs = u32::from_le_bytes([data[0x202], data[0x203], data[0x204], data[0x205]]);
-    if hdrs != 0x53726448 {
+    let hdrs = read_u32(data, SETUP_HEADER_SIGNATURE_OFFSET).unwrap_or_default();
+    if hdrs != SETUP_HEADER_SIGNATURE {
         log::error!("Invalid header signature: {:08x}", hdrs);
         return false;
     }
 
-    // Check boot protocol version
-    let version = u16::from_le_bytes([data[0x206], data[0x207]]);
-    log::info!("Boot protocol version: {}.{:02}", version >> 8, version & 0xFF);
+    let version = read_u16(data, BOOT_PROTOCOL_VERSION_OFFSET).unwrap_or_default();
+    log::info!(
+        "Boot protocol version: {}.{:02}",
+        version >> 8,
+        version & 0xFF
+    );
 
-    if version < 0x0200 {
+    if version < MIN_BOOT_PROTOCOL_VERSION {
         log::error!("Boot protocol version too old");
         return false;
     }
 
-    // Check for EFI handover support (version >= 2.12)
-    if version >= 0x020C {
-        let xloadflags = u16::from_le_bytes([data[0x236], data[0x237]]);
-        let has_efi_handover = (xloadflags & 0x08) != 0;
+    if version >= EFI_HANDOVER_VERSION {
+        let xloadflags = read_u16(data, XLOADFLAGS_OFFSET).unwrap_or_default();
+        let has_efi_handover = (xloadflags & EFI_HANDOVER_64_FLAG) != 0;
         log::info!("EFI handover 64-bit: {}", has_efi_handover);
     }
 
-    // Check PE header
-    let pe_offset = u32::from_le_bytes([data[0x3C], data[0x3D], data[0x3E], data[0x3F]]) as usize;
+    let pe_offset = read_u32(data, PE_HEADER_POINTER_OFFSET).unwrap_or_default() as usize;
     if pe_offset + 4 <= data.len() {
-        let pe_sig = u32::from_le_bytes([
-            data[pe_offset],
-            data[pe_offset + 1],
-            data[pe_offset + 2],
-            data[pe_offset + 3],
-        ]);
-        if pe_sig == 0x00004550 {
+        let pe_sig = read_u32(data, pe_offset).unwrap_or_default();
+        if pe_sig == PE_SIGNATURE {
             log::info!("PE header found at offset {:#x}", pe_offset);
             return true;
         }
@@ -234,7 +245,10 @@ fn verify_linux_efi_stub(data: &[u8]) -> bool {
 }
 
 /// Load all initrds into a single contiguous buffer
-fn load_initrds(fs: &mut FileSystem, initrds: &[alloc::string::String]) -> Result<Vec<u8>, &'static str> {
+fn load_initrds(
+    fs: &mut FileSystem,
+    initrds: &[alloc::string::String],
+) -> Result<Vec<u8>, &'static str> {
     let mut combined = Vec::new();
 
     for initrd_path_str in initrds {
@@ -261,7 +275,7 @@ fn build_cmdline(options: &str) -> Result<CString16, &'static str> {
 /// Load kernel as an EFI image
 fn load_kernel_image(kernel_data: &[u8]) -> Result<Handle, &'static str> {
     let kernel_size = kernel_data.len();
-    let pages = (kernel_size + 0xFFF) / 0x1000;
+    let pages = pages_for_size(kernel_size);
 
     let kernel_ptr = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
         .map_err(|_| "Failed to allocate memory for kernel")?;
@@ -303,9 +317,8 @@ fn setup_loaded_image(handle: Handle, cmdline: &CString16) -> Result<(), &'stati
 
 /// Install the LINUX_EFI_INITRD_MEDIA_GUID LoadFile2 protocol
 fn install_initrd_protocol(initrd_data: &[u8]) -> Result<(), &'static str> {
-    // Allocate persistent memory for initrd (must survive until kernel takes it)
     let initrd_size = initrd_data.len();
-    let pages = (initrd_size + 0xFFF) / 0x1000;
+    let pages = pages_for_size(initrd_size);
 
     let initrd_ptr = boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, pages)
         .map_err(|_| "Failed to allocate memory for initrd")?;
@@ -322,29 +335,7 @@ fn install_initrd_protocol(initrd_data: &[u8]) -> Result<(), &'static str> {
 
     log::info!("Initrd at {:p}, size {}", initrd_ptr.as_ptr(), initrd_size);
 
-    // Get the boot services table for raw protocol installation
-    let st = uefi::table::system_table_raw()
-        .ok_or("Failed to get system table")?;
-
-    let bs = unsafe { (*st.as_ptr()).boot_services };
-    if bs.is_null() {
-        return Err("Boot services not available");
-    }
-
-    // Create a new handle for the initrd protocol
-    let mut handle: *mut c_void = ptr::null_mut();
-
-    // Install LoadFile2 protocol with our device path
-    let status = unsafe {
-        ((*bs).install_multiple_protocol_interfaces)(
-            &mut handle,
-            &EFI_LOAD_FILE2_PROTOCOL_GUID as *const Guid as *const c_void,
-            &LOAD_FILE2_PROTOCOL as *const LoadFile2Protocol as *const c_void,
-            &EFI_DEVICE_PATH_PROTOCOL_GUID as *const Guid as *const c_void,
-            &INITRD_DEVICE_PATH as *const InitrdDevicePath as *const c_void,
-            ptr::null::<c_void>(),
-        )
-    };
+    let status = install_load_file2_protocol(boot_services()?);
 
     if status.is_success() {
         log::info!("LoadFile2 initrd protocol installed");
@@ -352,5 +343,46 @@ fn install_initrd_protocol(initrd_data: &[u8]) -> Result<(), &'static str> {
     } else {
         log::error!("Failed to install initrd protocol: {:?}", status);
         Err("Failed to install initrd protocol")
+    }
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(read_bytes::<2>(data, offset)?))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(read_bytes::<4>(data, offset)?))
+}
+
+fn read_bytes<const N: usize>(data: &[u8], offset: usize) -> Option<[u8; N]> {
+    let end = offset.checked_add(N)?;
+    let bytes = data.get(offset..end)?;
+    bytes.try_into().ok()
+}
+
+fn pages_for_size(size: usize) -> usize {
+    (size + PAGE_ALIGN_MASK) / PAGE_SIZE
+}
+
+fn boot_services() -> Result<*mut uefi::table::boot::BootServices, &'static str> {
+    let system_table = uefi::table::system_table_raw().ok_or("Failed to get system table")?;
+    let boot_services = unsafe { (*system_table.as_ptr()).boot_services };
+    if boot_services.is_null() {
+        return Err("Boot services not available");
+    }
+    Ok(boot_services)
+}
+
+fn install_load_file2_protocol(boot_services: *mut uefi::table::boot::BootServices) -> Status {
+    let mut handle: *mut c_void = ptr::null_mut();
+    unsafe {
+        ((*boot_services).install_multiple_protocol_interfaces)(
+            &mut handle,
+            &EFI_LOAD_FILE2_PROTOCOL_GUID as *const Guid as *const c_void,
+            &LOAD_FILE2_PROTOCOL as *const LoadFile2Protocol as *const c_void,
+            &EFI_DEVICE_PATH_PROTOCOL_GUID as *const Guid as *const c_void,
+            &INITRD_DEVICE_PATH as *const InitrdDevicePath as *const c_void,
+            ptr::null::<c_void>(),
+        )
     }
 }

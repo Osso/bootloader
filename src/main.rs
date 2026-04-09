@@ -19,7 +19,7 @@ use uefi::fs::{FileSystem, Path};
 #[cfg(target_os = "uefi")]
 use uefi::prelude::*;
 #[cfg(target_os = "uefi")]
-use uefi::{boot, CString16};
+use uefi::{CString16, boot};
 
 #[cfg(target_os = "uefi")]
 #[entry]
@@ -27,56 +27,59 @@ fn main() -> Status {
     uefi::helpers::init().unwrap();
     log::info!("rust-boot starting...");
 
-    // Get filesystem handle for ESP
     let fs = match open_esp_filesystem() {
         Ok(fs) => fs,
-        Err(e) => {
-            log::error!("Failed to open ESP filesystem: {:?}", e);
-            return Status::LOAD_ERROR;
-        }
+        Err(error) => return log_boot_error("Failed to open ESP filesystem", &error),
     };
-
-    // Load and parse config
     let config = match load_config(fs) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to load config: {}", e);
-            return Status::LOAD_ERROR;
-        }
+        Ok(config) => config,
+        Err(error) => return log_status_error("Failed to load config", error),
     };
-
     log::info!("Loaded {} boot entries", config.entries.len());
-
-    // Display menu and get selection
     let selected = menu::show(&config);
     let entry = &config.entries[selected];
+    log_boot_entry(entry);
+    let mut fs = match open_esp_filesystem() {
+        Ok(fs) => fs,
+        Err(error) => return log_boot_error("Failed to reopen ESP filesystem", &error),
+    };
+    if let Err(error) = loader::boot_linux(&mut fs, entry) {
+        return boot_failure_status(error);
+    }
+    Status::SUCCESS
+}
 
+#[cfg(not(target_os = "uefi"))]
+fn main() {}
+
+#[cfg(target_os = "uefi")]
+fn log_boot_error<T: core::fmt::Debug>(message: &str, error: &T) -> Status {
+    log::error!("{}: {:?}", message, error);
+    Status::LOAD_ERROR
+}
+
+#[cfg(target_os = "uefi")]
+fn log_status_error(message: &str, error: &str) -> Status {
+    log::error!("{}: {}", message, error);
+    Status::LOAD_ERROR
+}
+
+#[cfg(target_os = "uefi")]
+fn log_boot_entry(entry: &config::BootEntry) {
     log::info!("Booting: {}", entry.title);
     log::info!("  kernel: {}", entry.kernel);
     for initrd in &entry.initrd {
         log::info!("  initrd: {}", initrd);
     }
     log::info!("  options: {}", entry.options);
+}
 
-    // Re-open filesystem for loading kernel
-    let mut fs = match open_esp_filesystem() {
-        Ok(fs) => fs,
-        Err(e) => {
-            log::error!("Failed to reopen ESP filesystem: {:?}", e);
-            return Status::LOAD_ERROR;
-        }
-    };
-
-    // Load and boot the kernel
-    if let Err(e) = loader::boot_linux(&mut fs, entry) {
-        log::error!("Boot failed: {}", e);
-        log::info!("Press any key to continue...");
-        boot::stall(Duration::from_secs(10));
-        return Status::LOAD_ERROR;
-    }
-
-    // Should not reach here
-    Status::SUCCESS
+#[cfg(target_os = "uefi")]
+fn boot_failure_status(error: &str) -> Status {
+    log::error!("Boot failed: {}", error);
+    log::info!("Press any key to continue...");
+    boot::stall(Duration::from_secs(10));
+    Status::LOAD_ERROR
 }
 
 #[cfg(target_os = "uefi")]
